@@ -2,17 +2,24 @@
 pragma solidity ^0.8.9;
 
 import "./ICollateral.sol";
-import "./ICusdcV3Wrapper.sol";
+import "./stEthWrapper.sol";
 import "@openzeppelin/contracts/utils/math/Math.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
 import "reserve/contracts/plugins/assets/OracleLib.sol";
 import "reserve/contracts/libraries/Fixed.sol";
 
-
+/**
+ * @title CTokenNonFiatCollateral
+ * @notice Collateral plugin for a stETH of nonfiat collateral that requires default checks,
+ * Expected: tok        ==     ref ==        target !=      UoA, eg ETH, COMP, BTC , 
+             tok = {wstETH} , ref = {stETH}, target={ETH},  UoA={USD}
+ */
 contract CTokenV3Collateral is ICollateral {
     using OracleLib for AggregatorV3Interface;
     using FixLib for uint192;
+        AggregatorV3Interface public immutable targetUnitChainlinkFeed; // {UoA/target}
+
 
     AggregatorV3Interface public immutable chainlinkFeed;
     IERC20Metadata public immutable erc20;
@@ -72,22 +79,28 @@ contract CTokenV3Collateral is ICollateral {
 
     /// Refresh exchange rates and update default status.
     /// @custom:interaction RCEI
-    function refresh() external {
-        // == Refresh ==
+    function refresh() external virtual override {
         if (alreadyDefaulted()) return;
         CollateralStatus oldStatus = status();
 
+        // p {target/ref}
         try chainlinkFeed.price_(oracleTimeout) returns (uint192 p) {
-            // Check for soft default of underlying reference token
-            uint192 peg = targetPerRef();
+            // We don't need the return value from this next feed, but it should still function
+            try uoaPerTargetFeed.price_(oracleTimeout) returns (uint192) {
+                // {target/ref}
+                uint192 peg = targetPerRef();
 
-            // D18{UoA/ref}= D18{UoA/ref} * D18{1} / D18
-            uint192 delta = (peg * defaultThreshold) / FIX_ONE; // D18{UoA/ref}
+                // D18{target/ref}= D18{target/ref} * D18{1} / D18
+                uint192 delta = (peg * defaultThreshold) / FIX_ONE;
 
-            // If the price is below the default-threshold price, default eventually
-            // uint192(+/-) is the same as Fix.plus/minus
-            if (p < peg - delta || p > peg + delta) markStatus(CollateralStatus.IFFY);
-            else markStatus(CollateralStatus.SOUND);
+                // If the price is below the default-threshold price, default eventually
+                if (p < peg - delta || p > peg + delta) markStatus(CollateralStatus.IFFY);
+                else markStatus(CollateralStatus.SOUND);
+            } catch (bytes memory errData) {
+                // see: docs/solidity-style.md#Catching-Empty-Data
+                if (errData.length == 0) revert(); // solhint-disable-line reason-string
+                markStatus(CollateralStatus.IFFY);
+            }
         } catch (bytes memory errData) {
             // see: docs/solidity-style.md#Catching-Empty-Data
             if (errData.length == 0) revert(); // solhint-disable-line reason-string
@@ -98,13 +111,12 @@ contract CTokenV3Collateral is ICollateral {
         if (oldStatus != newStatus) {
             emit DefaultStatusChanged(oldStatus, newStatus);
         }
-
-        // No interactions beyond the initial refresher
     }
 
     /// @dev Since cUSDCv3 has an exchange rate of 1:1 with USDC, then {UoA/tok} = {UoA/ref}.
-    function strictPrice() public view returns (uint192) {
-        return chainlinkFeed.price(oracleTimeout).mul(refPerTok());
+    function strictPrice() public view virtual override returns (uint192) {
+        // {UoA/tok} = {UoA/target} * {target/ref} * {ref/tok} (1)
+        return uoaPerTargetFeed.price(oracleTimeout).mul(chainlinkFeed.price(oracleTimeout));
     }
 
     /// Can return 0
@@ -132,10 +144,9 @@ contract CTokenV3Collateral is ICollateral {
         }
     }
 
-    /// @dev {UoA} is USD and {target} is USD so this is 1:1.
     /// @return {UoA/target} The price of a target unit in UoA
-    function pricePerTarget() public pure returns (uint192) {
-        return FIX_ONE;
+    function pricePerTarget() public view override returns (uint192) {
+        return uoaPerTargetFeed.price(oracleTimeout);
     }
 
     /// @return {target/ref} Quantity of whole target units per whole reference unit in the peg

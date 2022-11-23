@@ -91,7 +91,7 @@ contract CTokenFiatCollateral is Collateral {
                 uint192 peg = (pricePerTarget() * targetPerRef()) / FIX_ONE;
 
                 // D18{UoA/ref}= D18{UoA/ref} * D18{1} / D18
-                uint192 delta = (peg * defaultThreshold) / FIX_ONE; // D18{UoA/ref}
+                uint192 delta = (peg * defaultThreshold) / peg; // D18{UoA/ref}
 
                 // If the price is below the default-threshold price, default eventually
                 // uint192(+/-) is the same as Fix.plus/minus
@@ -109,8 +109,7 @@ contract CTokenFiatCollateral is Collateral {
         if (oldStatus != newStatus) {
             emit DefaultStatusChanged(oldStatus, newStatus);
         }
-
-        // No interactions beyond the initial refresher
+ 
     }
 
     /// @return {ref/tok} Quantity of whole reference units per whole collateral tokens

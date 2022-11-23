@@ -96,8 +96,5 @@ contract NonFiatCollateral is Collateral {
         }
     }
 
-    /// @return {UoA/target} The price of a target unit in UoA
-    function pricePerTarget() public view override returns (uint192) {
-        return uoaPerTargetFeed.price(oracleTimeout);
-    }
+  
 }
